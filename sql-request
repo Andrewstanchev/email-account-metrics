@@ -1,0 +1,121 @@
+-- метрики по акаунтамм
+WITH account_metrics as (
+SELECT
+ s.date as date,
+ sp.country as country,
+ a.send_interval as send_interval,
+ a.is_verified as is_verified,
+ a.is_unsubscribed as is_unsubscribed,
+ count(distinct a.id) as account_cnt,
+ 0 AS sent_msg,
+ 0 AS open_msg,
+ 0 AS visit_msg
+
+FROM `DA.session` s
+JOIN `DA.session_params` sp
+ON s.ga_session_id = sp.ga_session_id
+JOIN `DA.account_session` acs
+ON sp.ga_session_id = acs.ga_session_id
+JOIN `DA.account` a
+ON acs.account_id = a.id
+GROUP BY date, country, send_interval, is_unsubscribed, is_verified
+order by account_cnt desc
+),
+
+
+-- метрики по емейлам
+email_metrics AS (
+   SELECT
+       date_add(s.date, INTERVAL snt.sent_date DAY) as date,
+       sp.country, 
+       a.send_interval,
+       a.is_verified,
+       a.is_unsubscribed,
+       0 as account_cnt,
+       COUNT(distinct snt.id_message) AS sent_msg,
+       COUNT(distinct opn.id_message) AS open_msg,
+       COUNT(distinct vst.id_message) AS visit_msg
+
+   FROM `DA.session` s
+   JOIN `DA.session_params` sp
+   ON s.ga_session_id = sp.ga_session_id
+   JOIN `DA.account_session` acs
+   ON sp.ga_session_id = acs.ga_session_id
+   JOIN `DA.account` a
+   ON acs.account_id = a.id
+   JOIN `DA.email_sent` AS snt
+   ON a.id = snt.id_account
+   LEFT JOIN `DA.email_open` AS opn
+   ON snt.id_message = opn.id_message
+   LEFT JOIN `DA.email_visit` AS vst
+   ON snt.id_message = vst.id_message
+   GROUP BY date, sp.country, a.send_interval, a.is_verified, a.is_unsubscribed
+),
+
+-- об'єднуємо 2 CTE(емейлі та акаунти)
+both_metrics as (
+SELECT * from account_metrics
+UNION ALL
+SELECT * from email_metrics
+),
+
+-- групуємо отримані результати
+both_metrics_grouped as (
+SELECT
+   date,
+   country,
+   send_interval,
+   is_verified,
+   is_unsubscribed,
+   SUM(account_cnt) AS account_cnt,
+   SUM(sent_msg) AS sent_msg,
+   SUM(open_msg) AS open_msg,
+   SUM(visit_msg) AS visit_msg
+FROM both_metrics
+GROUP BY date, country, send_interval, is_verified, is_unsubscribed
+),
+
+--рахуємо загальні метрики по країнам
+total_by_country as (
+SELECT
+country as country,
+sum(account_cnt) as total_country_account_cnt,
+sum(sent_msg) as total_country_sent_cnt
+FROM both_metrics_grouped
+group by country
+),
+
+--рахуємо рейтинг країн по листам та підписникам
+ranked_countries AS (
+   SELECT *, --вибираю все щоб не додавати зайвий джоін вкінці)
+       DENSE_RANK() OVER (ORDER BY total_country_account_cnt DESC) AS rank_total_country_account_cnt,
+       DENSE_RANK() OVER (ORDER BY total_country_sent_cnt DESC) AS rank_total_country_sent_cnt
+   FROM total_by_country
+)
+
+--ТЕПЕР ОБ'ЄДНУЄМО ВСЕ В ОДНУ ТАБЛИЦЮ (залишив тільки один джоін)
+SELECT
+bm.date,
+bm.country,
+bm.send_interval,
+bm.is_verified,
+bm.is_unsubscribed,
+bm.account_cnt,
+bm.sent_msg,
+bm.open_msg,
+bm.visit_msg,
+rc.total_country_account_cnt,
+rc.total_country_sent_cnt,
+rc.rank_total_country_account_cnt,
+rc.rank_total_country_sent_cnt
+FROM both_metrics_grouped bm
+JOIN ranked_countries rc
+ON bm.country = rc.country
+WHERE rank_total_country_account_cnt <= 10 OR rank_total_country_sent_cnt <= 10
+ORDER BY rank_total_country_account_cnt
+
+
+
+
+
+
